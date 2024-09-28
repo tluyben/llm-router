@@ -330,7 +330,7 @@ func main() {
 			Addr:    ":80",
 			Handler: mux,
 		}
-		fmt.Println("HTTP Server is running on port 80")
+		log.Println("HTTP Server is running on port 80")
 		return httpServer.ListenAndServe()
 	})
 
@@ -345,6 +345,7 @@ func main() {
 		// Configure the TLS server
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 		}
 
 		httpsServer := &http.Server{
@@ -353,8 +354,12 @@ func main() {
 			TLSConfig: tlsConfig,
 		}
 
-		fmt.Println("HTTPS Server is running on port 443")
-		return httpsServer.ListenAndServeTLS("", "")
+		log.Println("HTTPS Server is running on port 443")
+		err = httpsServer.ListenAndServeTLS("", "")
+		if err != nil {
+			log.Printf("HTTPS server error: %v", err)
+		}
+		return err
 	})
 
 	// Wait for both servers and log any errors
