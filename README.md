@@ -45,7 +45,13 @@ This project provides a Golang-based API router that intercepts calls to both th
    OR_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
    ```
 
-2. (Optional) Create a `middleware.js` file if you want to process requests:
+2. Create a SSL key & certificate:
+
+   ```
+   openssl req -x509 -newkey rsa:4096 -keyout server.key -out server.crt -days 365 -nodes
+   ```
+
+3. (Optional) Create a `middleware.js` file if you want to process requests:
 
    ```javascript
    function process(request) {
@@ -54,7 +60,7 @@ This project provides a Golang-based API router that intercepts calls to both th
    }
    ```
 
-3. (Optional) Create a `system_prompt.txt` file if you want to inject a system prompt:
+4. (Optional) Create a `system_prompt.txt` file if you want to inject a system prompt:
    ```
    You are a helpful assistant.
    ```
