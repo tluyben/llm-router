@@ -7,10 +7,6 @@ services:
       - OR_MODEL=${OR_MODEL}
       - OR_KEY=${OR_KEY}
       - OR_ENDPOINT=${OR_ENDPOINT}
-    volumes:
-      - /etc/hosts:/etc/hosts:ro
-    cap_add:
-      - NET_ADMIN
     networks:
       - router-net
 

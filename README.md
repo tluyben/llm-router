@@ -69,6 +69,10 @@ Run the application with the following command:
 go run main.go --middleware middleware.js --system system_prompt.txt
 ```
 
+```
+make && ./router --middleware middleware.js --system system_prompt.txt
+```
+
 #### 🐳 Docker Setup
 
 ##### 🏗️ Building the Docker Image
@@ -183,7 +187,6 @@ print(response.choices[0].message.content)
 import anthropic
 
 client = anthropic.Client(api_key="your-anthropic-api-key")  # This won't be used, but is required by the client
-client.base_url = "http://localhost/v1"  # Point to your local router
 
 response = client.completion(
     model="claude-2",  # This will be overridden with the OR_MODEL
@@ -200,7 +203,6 @@ print(response.completion)
 import openai
 
 openai.api_key = "your-openai-api-key"
-openai.api_base = "http://localhost/v1"
 
 for chunk in openai.ChatCompletion.create(
     model="gpt-3.5-turbo",
@@ -226,3 +228,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - OpenAI and Anthropic for their API designs
 - OpenRouter for providing alternative AI model access
 - The Go community for the excellent libraries used in this project
+
+## Author @luyben (X), @tluyben (github)

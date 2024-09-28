@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
+	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -10,13 +13,19 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/dop251/goja"
 	"github.com/joho/godotenv"
 )
 
 var (
-	orModel    string
-	orKey      string
-	orEndpoint string
+	orModel      string
+	orKey        string
+	orEndpoint   string
+	middleware   string
+	systemPrompt string
+	jsRuntime    *goja.Runtime
+	noHosts      bool
+	routerFile   string
 )
 
 func init() {
@@ -29,8 +38,36 @@ func init() {
 	orKey = getEnv("OR_KEY", "")
 	orEndpoint = getEnv("OR_ENDPOINT", "")
 
-	if orModel == "" || orKey == "" || orEndpoint == "" {
-		log.Fatal("Missing required environment variables: OR_MODEL, OR_KEY, or OR_ENDPOINT")
+	flag.StringVar(&middleware, "middleware", "", "Path to JavaScript middleware file")
+	flag.StringVar(&systemPrompt, "system", "", "Path to system prompt file")
+	flag.BoolVar(&noHosts, "nohosts", false, "Skip /etc/hosts check and modification")
+	flag.StringVar(&routerFile, "router", "", "Path to JavaScript router file")
+	flag.Parse()
+
+	if middleware != "" {
+		jsRuntime = goja.New()
+		js, err := ioutil.ReadFile(middleware)
+		if err != nil {
+			log.Fatalf("Error reading middleware file: %v", err)
+		}
+		_, err = jsRuntime.RunString(string(js))
+		if err != nil {
+			log.Fatalf("Error running middleware: %v", err)
+		}
+	}
+
+	if routerFile != "" {
+		if jsRuntime == nil {
+			jsRuntime = goja.New()
+		}
+		js, err := ioutil.ReadFile(routerFile)
+		if err != nil {
+			log.Fatalf("Error reading router file: %v", err)
+		}
+		_, err = jsRuntime.RunString(string(js))
+		if err != nil {
+			log.Fatalf("Error running router script: %v", err)
+		}
 	}
 }
 
@@ -96,6 +133,82 @@ func fixHostsFile(hostsFile string) error {
 	return cmd.Run()
 }
 
+func processRequest(body []byte, isAnthropicAPI bool) ([]byte, string, string, string, error) {
+	var requestBody map[string]interface{}
+	err := json.Unmarshal(body, &requestBody)
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("error unmarshaling request body: %v", err)
+	}
+
+	if systemPrompt != "" {
+		systemContent, err := ioutil.ReadFile(systemPrompt)
+		if err != nil {
+			return nil, "", "", "", fmt.Errorf("error reading system prompt file: %v", err)
+		}
+		if isAnthropicAPI {
+			prompt := fmt.Sprintf("%s\n\nHuman: %s\n\nAssistant:", string(systemContent), requestBody["prompt"])
+			requestBody["prompt"] = prompt
+		} else {
+			messages, ok := requestBody["messages"].([]interface{})
+			if !ok {
+				return nil, "", "", "", fmt.Errorf("invalid or missing 'messages' field in request")
+			}
+			systemMessage := map[string]interface{}{
+				"role":    "system",
+				"content": string(systemContent),
+			}
+			requestBody["messages"] = append([]interface{}{systemMessage}, messages...)
+		}
+	}
+
+	if middleware != "" {
+		processFunc, ok := goja.AssertFunction(jsRuntime.Get("process"))
+		if !ok {
+			return nil, "", "", "", fmt.Errorf("middleware does not contain a 'process' function")
+		}
+
+		result, err := processFunc(goja.Undefined(), jsRuntime.ToValue(requestBody))
+		if err != nil {
+			return nil, "", "", "", fmt.Errorf("error executing middleware: %v", err)
+		}
+
+		err = jsRuntime.ExportTo(result, &requestBody)
+		if err != nil {
+			return nil, "", "", "", fmt.Errorf("error exporting middleware result: %v", err)
+		}
+	}
+
+	model := orModel
+	url := orEndpoint
+	bearer := orKey
+
+	if routerFile != "" {
+		routeFunc, ok := goja.AssertFunction(jsRuntime.Get("route"))
+		if !ok {
+			return nil, "", "", "", fmt.Errorf("router does not contain a 'route' function")
+		}
+
+		result, err := routeFunc(goja.Undefined(), jsRuntime.ToValue(requestBody))
+		if err != nil {
+			return nil, "", "", "", fmt.Errorf("error executing router: %v", err)
+		}
+
+		routeResult := result.Export().(map[string]interface{})
+		model = routeResult["model"].(string)
+		url = routeResult["url"].(string)
+		bearer = routeResult["bearer"].(string)
+	}
+
+	requestBody["model"] = model
+
+	processedBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, "", "", "", fmt.Errorf("error marshaling processed request: %v", err)
+	}
+
+	return processedBody, model, url, bearer, nil
+}
+
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -104,15 +217,23 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	isAnthropicAPI := strings.Contains(r.URL.Path, "/v1/complete")
+
+	processedBody, _, url, bearer, err := processRequest(body, isAnthropicAPI)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error processing request: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	client := &http.Client{}
-	req, err := http.NewRequest("POST", orEndpoint, strings.NewReader(string(body)))
+	req, err := http.NewRequest("POST", url, strings.NewReader(string(processedBody)))
 	if err != nil {
 		http.Error(w, "Error creating request", http.StatusInternalServerError)
 		return
 	}
 
 	req.Header = r.Header
-	req.Header.Set("Authorization", "Bearer "+orKey)
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("HTTP-Referer", "https://github.com/PentBeear/Rythm-OpenRouter-backend")
 
 	resp, err := client.Do(req)
@@ -122,23 +243,48 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "Error reading response body", http.StatusInternalServerError)
-		return
-	}
-
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
 	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
+
+	if r.URL.Query().Get("stream") == "true" {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				log.Printf("Error reading stream: %v", err)
+				break
+			}
+
+			_, err = w.Write(line)
+			if err != nil {
+				log.Printf("Error writing to response: %v", err)
+				break
+			}
+			flusher.Flush()
+		}
+	} else {
+		io.Copy(w, resp.Body)
+	}
 }
 
 func main() {
-	checkAndFixHosts()
+	if !noHosts {
+		checkAndFixHosts()
+	}
 
-	http.HandleFunc("/", handleRequest)
+	http.HandleFunc("/v1/chat/completions", handleRequest) // OpenAI endpoint
+	http.HandleFunc("/v1/complete", handleRequest)         // Anthropic endpoint
 
 	fmt.Println("Server is running on port 80")
 	log.Fatal(http.ListenAndServe(":80", nil))
