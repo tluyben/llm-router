@@ -1,3 +1,5 @@
 .env
 .env.local
 router
+server.crt
+server.key

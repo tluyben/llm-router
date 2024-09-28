@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,9 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/dop251/goja"
 	"github.com/joho/godotenv"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -277,15 +280,85 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		io.Copy(w, resp.Body)
 	}
 }
+func logRequest(r *http.Request, code int, duration time.Duration) {
+	log.Printf("%s %s %s %d %v", r.RemoteAddr, r.Method, r.URL.Path, code, duration)
+}
 
+// loggingMiddleware wraps an http.HandlerFunc and logs request details
+func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Create a custom ResponseWriter to capture the status code
+		lrw := &loggingResponseWriter{w, 200}
+
+		// Call the next handler
+		next.ServeHTTP(lrw, r)
+
+		// Log the request details
+		duration := time.Since(start)
+		logRequest(r, lrw.statusCode, duration)
+	}
+}
+
+// loggingResponseWriter is a custom ResponseWriter that captures the status code
+type loggingResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (lrw *loggingResponseWriter) WriteHeader(code int) {
+	lrw.statusCode = code
+	lrw.ResponseWriter.WriteHeader(code)
+}
 func main() {
 	if !noHosts {
 		checkAndFixHosts()
 	}
 
-	http.HandleFunc("/v1/chat/completions", handleRequest) // OpenAI endpoint
-	http.HandleFunc("/v1/complete", handleRequest)         // Anthropic endpoint
+	// Create a new ServeMux for our handlers
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", loggingMiddleware(handleRequest)) // OpenAI endpoint
+	mux.HandleFunc("/v1/complete", loggingMiddleware(handleRequest))         // Anthropic endpoint
 
-	fmt.Println("Server is running on port 80")
-	log.Fatal(http.ListenAndServe(":80", nil))
+	// Create an error group to manage both servers
+	var g errgroup.Group
+
+	// Start HTTP server
+	g.Go(func() error {
+		httpServer := &http.Server{
+			Addr:    ":80",
+			Handler: mux,
+		}
+		fmt.Println("HTTP Server is running on port 80")
+		return httpServer.ListenAndServe()
+	})
+
+	// Start HTTPS server
+	g.Go(func() error {
+		// Load SSL certificate and key
+		cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+		if err != nil {
+			log.Fatalf("Error loading SSL certificate and key: %v", err)
+		}
+
+		// Configure the TLS server
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		}
+
+		httpsServer := &http.Server{
+			Addr:      ":443",
+			Handler:   mux,
+			TLSConfig: tlsConfig,
+		}
+
+		fmt.Println("HTTPS Server is running on port 443")
+		return httpsServer.ListenAndServeTLS("", "")
+	})
+
+	// Wait for both servers and log any errors
+	if err := g.Wait(); err != nil {
+		log.Fatal(err)
+	}
 }
