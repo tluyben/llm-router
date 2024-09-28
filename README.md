@@ -169,7 +169,6 @@ After starting the router (either directly or via Docker), it will listen on por
 import openai
 
 openai.api_key = "your-openai-api-key"  # This won't be used, but is required by the client
-openai.api_base = "http://localhost/v1"  # Point to your local router
 
 response = openai.ChatCompletion.create(
     model="gpt-3.5-turbo",  # This will be overridden with the OR_MODEL
