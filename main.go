@@ -30,7 +30,7 @@ func init() {
 	orEndpoint = getEnv("OR_ENDPOINT", "")
 
 	if orModel == "" || orKey == "" || orEndpoint == "" {
-		log.Fatal("Missing required environment variables")
+		log.Fatal("Missing required environment variables: OR_MODEL, OR_KEY, or OR_ENDPOINT")
 	}
 }
 

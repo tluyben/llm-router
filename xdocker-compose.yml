@@ -1,0 +1,21 @@
+args: -d
+
+services:
+  api-router:
+    build: .
+    ports:
+      - "80:80"
+    environment:
+      - OR_MODEL=${OR_MODEL}
+      - OR_KEY=${OR_KEY}
+      - OR_ENDPOINT=${OR_ENDPOINT}
+    volumes:
+      - /etc/hosts:/etc/hosts:ro
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - router-net
+
+networks:
+  router-net:
+    driver: bridge
